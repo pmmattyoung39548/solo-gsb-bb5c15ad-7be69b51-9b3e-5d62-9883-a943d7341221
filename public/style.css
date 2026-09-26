@@ -118,6 +118,19 @@ tbody tr + tr td { border-top: 1px solid var(--border); }
 .timed-settings #time-limit { width: 90px; }
 .hint-over { color: #ff9d9a; font-weight: bold; }
 
+.limit-settings {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.limit-settings #prop-limit { width: 110px; }
+
 input[type="text"], input[type="number"], select {
   background: var(--bg);
   color: var(--text);
@@ -235,6 +248,7 @@ input[type="number"] { width: 70px; }
 .prop-del { color: #ff9d9a; }
 .prop-none { color: var(--muted); }
 .step-count { color: var(--accent); font-weight: bold; }
+.step-count-over { color: #ff9d9a; }
 
 .conflict-box {
   border: 1px solid var(--danger);

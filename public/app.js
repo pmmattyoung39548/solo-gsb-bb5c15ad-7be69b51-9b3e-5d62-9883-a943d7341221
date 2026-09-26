@@ -9,6 +9,7 @@ const state = {
   planId: null,
   mode: 'classic', // 'classic' | 'timed'
   timeLimit: 120,
+  propLimit: null, // 单段道具操作上限（null = 不限制）
   scenes: [], // classic: { id, name, props }；timed 额外带 { duration, required, value }
   constraints: { dependencies: [], fixedPositions: [], forbiddenAdjacencies: [] },
   live: null, // 最近一次求解/重排结果（当前节目单）
@@ -265,6 +266,7 @@ function payload() {
     constraints: state.constraints,
   };
   if (isTimed()) base.timeLimit = state.timeLimit;
+  if (state.propLimit) base.propLimit = state.propLimit;
   return base;
 }
 
@@ -599,6 +601,8 @@ function conflictContent(conflict, isOvertime) {
   const h = document.createElement('h3');
   if (conflict.type === 'prefix-conflict') {
     h.textContent = '⚠ 已完成前缀与约束冲突';
+  } else if (conflict.type === 'prop-limit-infeasible') {
+    h.textContent = '⚠ 无解：单段道具操作上限过紧';
   } else {
     h.textContent = isOvertime ? '⚠ 无解：必演场景已超时' : '⚠ 无解：约束相互冲突';
   }
@@ -662,9 +666,11 @@ function flowBlock(order, prefixLen, isReference) {
 
 function stepsBlock(data) {
   const frag = document.createDocumentFragment();
+  const limit = Number(data.propLimit) || 0;
   const total = document.createElement('p');
   total.className = 'total-line';
-  total.innerHTML = `道具增减总次数：<strong>${data.totalCost}</strong> 次（含开场布置，下同）`;
+  total.innerHTML = `道具增减总次数：<strong>${data.totalCost}</strong> 次（含开场布置，下同）`
+    + (limit ? `；单段上限 <strong>${limit}</strong> 件/段` : '');
   frag.appendChild(total);
 
   const h = document.createElement('h3');
@@ -701,7 +707,11 @@ function stepsBlock(data) {
       parts.push(`<span class="prop-add">上台：${escapeHtml(step.added.join('、'))}</span>`);
     }
     if (!parts.length) parts.push('<span class="prop-none">道具无变化</span>');
-    detail.innerHTML = parts.join('　｜　') + `　<span class="step-count">（${step.count} 次）</span>`;
+    // 逐段用量：设置上限时显示「用量 / 上限」，超限的历史段（已完成前缀）标红提示
+    const countHtml = limit
+      ? `　<span class="step-count${step.count > limit ? ' step-count-over' : ''}">（${step.count} / ${limit} 次）</span>`
+      : `　<span class="step-count">（${step.count} 次）</span>`;
+    detail.innerHTML = parts.join('　｜　') + countHtml;
     li.appendChild(detail);
     ul.appendChild(li);
   });
@@ -909,6 +919,7 @@ function hydrateFromPlan(p) {
   state.planId = p.id;
   state.mode = p.mode === 'timed' ? 'timed' : 'classic';
   state.timeLimit = Number(p.timeLimit) || 120;
+  state.propLimit = Number(p.propLimit) > 0 ? Number(p.propLimit) : null;
   state.scenes = p.scenes.map(s => ({
     id: s.id,
     name: s.name,
@@ -923,6 +934,7 @@ function hydrateFromPlan(p) {
     forbiddenAdjacencies: (p.constraints.forbiddenAdjacencies || []).map(f => ({ ...f })),
   };
   $('#time-limit').value = state.timeLimit;
+  $('#prop-limit').value = state.propLimit || '';
   applyMode(state.mode);
 }
 
@@ -943,8 +955,10 @@ function newPlan() {
   state.live = null;
   state.replan = null;
   state.savedReplan = null;
+  state.propLimit = null;
   $('#plan-name').value = '';
   $('#plan-select').value = '';
+  $('#prop-limit').value = '';
   applyMode('classic');
   $('#result-card').hidden = true;
   showStatus('已新建空白方案');
@@ -1019,6 +1033,11 @@ document.querySelectorAll('input[name="mode"]').forEach(r => {
 $('#time-limit').addEventListener('input', () => {
   state.timeLimit = Math.max(1, Math.floor(Number($('#time-limit').value) || 0));
   updateRequiredHint();
+});
+$('#prop-limit').addEventListener('input', () => {
+  const raw = $('#prop-limit').value.trim();
+  const v = Math.floor(Number(raw));
+  state.propLimit = raw !== '' && Number.isInteger(v) && v > 0 ? v : null;
 });
 
 $('#btn-add-dep').addEventListener('click', () => {

@@ -6,7 +6,7 @@ let seed = 123456789;
 function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
 function ri(n) { return Math.floor(rnd() * n); }
 
-function brute(scenes, constraints, timeLimit) {
+function brute(scenes, constraints, timeLimit, propLimit) {
   const n = scenes.length;
   const idx = new Map(scenes.map((s, i) => [s.id, i]));
   const props = scenes.map(s => new Set(s.props));
@@ -83,6 +83,14 @@ function brute(scenes, constraints, timeLimit) {
         if (bad[perm[i]][perm[i + 1]]) { ok = false; break; }
       }
       if (!ok) continue;
+      // 单段道具操作上限：开场布置与每次换景都不得超限
+      if (propLimit && perm.length && setup[perm[0]] > propLimit) continue;
+      if (propLimit) {
+        for (let i = 1; i < perm.length; i++) {
+          if (ccost(perm[i - 1], perm[i]) > propLimit) { ok = false; break; }
+        }
+        if (!ok) continue;
+      }
       let cst = perm.length ? setup[perm[0]] : 0;
       for (let i = 1; i < perm.length; i++) cst += ccost(perm[i - 1], perm[i]);
       if (bestForMask === null || cst < bestForMask) bestForMask = cst;
@@ -97,7 +105,7 @@ function brute(scenes, constraints, timeLimit) {
 }
 
 /** 独立校验求解器返回的顺序确实满足 timed 模式全部约束与目标 */
-function verifySolution(scenes, constraints, timeLimit, r) {
+function verifySolution(scenes, constraints, timeLimit, propLimit, r) {
   const n = scenes.length;
   const idx = new Map(scenes.map((s, i) => [s.id, i]));
   const props = scenes.map(s => new Set(s.props));
@@ -147,10 +155,13 @@ function verifySolution(scenes, constraints, timeLimit, r) {
   for (const i of order) if (!scenes[i].required) v += scenes[i].value;
   if (v !== r.totalValue) throw new Error('价值字段不一致');
   let c = order.length ? props[order[0]].size : 0;
+  if (propLimit && order.length && props[order[0]].size > propLimit) throw new Error('开场布置超过单段上限');
   for (let k = 1; k < order.length; k++) {
     const a = props[order[k - 1]], b = props[order[k]];
-    for (const p of a) if (!b.has(p)) c++;
-    for (const p of b) if (!a.has(p)) c++;
+    let seg = 0;
+    for (const p of a) if (!b.has(p)) { c++; seg++; }
+    for (const p of b) if (!a.has(p)) { c++; seg++; }
+    if (propLimit && seg > propLimit) throw new Error('换景超过单段上限');
   }
   if (c !== r.totalCost) throw new Error('代价字段不一致');
 }
@@ -184,36 +195,37 @@ function randomInstance() {
     if (a !== b) constraints.forbiddenAdjacencies.push({ a: `s${a}`, b: `s${b}` });
   }
   const timeLimit = 1 + ri(n * 16);
-  return { scenes, constraints, timeLimit };
+  const propLimit = ri(6); // 0 = 不限制；1..5 为单段道具操作上限
+  return { scenes, constraints, timeLimit, propLimit };
 }
 
 let tested = 0;
 const NITER = Number(process.argv[2] || 400);
 for (let it = 0; it < NITER; it++) {
-  const { scenes, constraints, timeLimit } = randomInstance();
-  const r = solve(scenes, constraints, { mode: 'timed', timeLimit });
-  const b = brute(scenes, constraints, timeLimit);
+  const { scenes, constraints, timeLimit, propLimit } = randomInstance();
+  const r = solve(scenes, constraints, { mode: 'timed', timeLimit, propLimit });
+  const b = brute(scenes, constraints, timeLimit, propLimit);
   tested++;
   if (b === null) {
     if (r.ok) {
-      console.log('MISMATCH: brute infeasible but solver ok', JSON.stringify({ scenes, constraints, timeLimit, r: r.order }));
+      console.log('MISMATCH: brute infeasible but solver ok', JSON.stringify({ scenes, constraints, timeLimit, propLimit, r: r.order }));
       process.exit(1);
     }
     continue;
   }
   if (!r.ok) {
-    console.log('MISMATCH: brute feasible but solver infeasible', JSON.stringify({ scenes, constraints, timeLimit }));
+    console.log('MISMATCH: brute feasible but solver infeasible', JSON.stringify({ scenes, constraints, timeLimit, propLimit }));
     process.exit(1);
   }
   try {
-    verifySolution(scenes, constraints, timeLimit, r);
+    verifySolution(scenes, constraints, timeLimit, propLimit, r);
   } catch (e) {
-    console.log('INVALID SOLUTION:', e.message, JSON.stringify({ scenes, constraints, timeLimit, order: r.order }));
+    console.log('INVALID SOLUTION:', e.message, JSON.stringify({ scenes, constraints, timeLimit, propLimit, order: r.order }));
     process.exit(1);
   }
   if (r.totalValue !== b.value || r.totalCost !== b.cost) {
     console.log('MISMATCH objective', JSON.stringify({
-      scenes, constraints, timeLimit,
+      scenes, constraints, timeLimit, propLimit,
       got: { order: r.order, value: r.totalValue, cost: r.totalCost },
       exp: { value: b.value, cost: b.cost, mask: b.mask },
     }, null, 1));

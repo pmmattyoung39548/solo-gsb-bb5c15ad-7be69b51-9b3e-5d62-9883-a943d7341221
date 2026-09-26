@@ -41,6 +41,7 @@ function randomInstance() {
     scenes, constraints,
     mode: scenes.some(s => s.required) || rnd() < 0.3 ? 'timed' : 'classic',
     timeLimit: 1 + ri(n * 14),
+    propLimit: ri(5), // 0 = 不限制；1..4 为单段道具操作上限
   };
 }
 
@@ -59,7 +60,7 @@ function perms(arr) {
 }
 
 function run() {
-  const { scenes, constraints, mode, timeLimit } = randomInstance();
+  const { scenes, constraints, mode, timeLimit, propLimit } = randomInstance();
   const n = scenes.length;
   const idx = new Map(scenes.map((s, i) => [s.id, i]));
   const props = scenes.map(s => new Set(s.props));
@@ -112,7 +113,7 @@ function run() {
   const prefixDur = prefix.reduce((a, g) => a + scenes[g].duration, 0);
   if (mode === 'timed' && prefixDur > timeLimit) prefixOvertime = true;
 
-  const opts = { mode, timeLimit, replan: {
+  const opts = { mode, timeLimit, propLimit, replan: {
     prefixIds: prefix.map(g => scenes[g].id),
     stageProps: [...stageProps],
     originalOrder: scenes.map(s => s.id),
@@ -164,6 +165,14 @@ function run() {
       // 后缀内禁止相邻
       for (let i = 0; i + 1 < perm.length; i++) {
         if (bad[perm[i]][perm[i + 1]]) return null;
+      }
+      // 单段道具操作上限：首段（从实际道具切入）与后缀内每次换景都不得超限；
+      // 已完成前缀是历史事实，不受上限约束
+      if (propLimit && perm.length) {
+        if (symDiff(stageProps, props[perm[0]]) > propLimit) return null;
+        for (let i = 1; i < perm.length; i++) {
+          if (symDiff(props[perm[i - 1]], props[perm[i]]) > propLimit) return null;
+        }
       }
       let cost = 0;
       if (perm.length) {

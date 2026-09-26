@@ -661,4 +661,167 @@ const R = (opts) => ({ replan: opts });
   assert.ok(elapsed < 1000, `重排耗时 ${elapsed}ms，超过预期`);
 }
 
+/* ================= 单段道具操作上限（propLimit）================= */
+
+const L = (propLimit) => ({ propLimit });
+const LT = (timeLimit, propLimit) => ({ mode: 'timed', timeLimit, propLimit });
+
+/* 41. 经典模式：上限约束开场与每次换景；结果每段都不超限且仍为受限候选中的最优 */
+{
+  // 两组道具 {p1}/{p2} 直接换景需 2 件操作；E 是桥接场景（进出各 1 件）
+  const scenes = [
+    S('A', ['p1']), S('B', ['p1']),
+    S('C', ['p2']), S('D', ['p2']),
+    S('E', ['p1', 'p2']),
+  ];
+  const r = solve(scenes, C(), L(1));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.propLimit, 1);
+  assert.strictEqual(r.order.length, 5);
+  // 受限最优：E 必须夹在两组之间，总代价 = 开场 1 + 进 E 1 + 出 E 1 = 3
+  assert.strictEqual(r.totalCost, 3);
+  assert.ok(r.steps.every(s => s.count <= 1), '每段用量都不超过上限');
+  assert.strictEqual(r.steps.reduce((a, s) => a + s.count, 0), r.totalCost);
+}
+
+/* 42. 经典模式：上限导致无解 → 明确提示（不限制上限时有解） */
+{
+  const scenes = [S('A', ['p1']), S('B', ['p1']), S('C', ['p2']), S('D', ['p2'])];
+  const r = solve(scenes, C(), L(1));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.conflict.type, 'prop-limit-infeasible');
+  assert.ok(r.conflict.message.includes('1'));
+  // 对照：不设上限时同一节目单有解
+  assert.strictEqual(solve(scenes, C()).ok, true);
+}
+
+/* 43. 经典模式：场景无论开场还是接在任何场景之后都超限 → 点名无法排入的场景 */
+{
+  const scenes = [S('A', ['a']), S('B', ['b1', 'b2', 'b3', 'b4']), S('C', ['c1', 'c2', 'c3', 'c4'])];
+  const r = solve(scenes, C(), L(3));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.conflict.type, 'prop-limit-infeasible');
+  assert.ok(r.conflict.message.includes('B') && r.conflict.message.includes('C'));
+  assert.ok(!r.conflict.message.includes('「A」'));
+}
+
+/* 44. timed：上限使高价值可选场景无法与必演相邻 → 按原目标改选低价值场景 */
+{
+  const scenes = [
+    T('A', ['x'], 5, true, 0),
+    T('B', ['y'], 5, false, 10),
+    T('C', ['x'], 5, false, 1),
+  ];
+  // 无上限：A+B 价值 10 最优
+  const noLimit = solve(scenes, C(), LT(10, 0));
+  assert.strictEqual(noLimit.ok, true);
+  assert.strictEqual(noLimit.totalValue, 10);
+  // 上限 1：A↔B 换景需 2 件超限 → B 不可入选，改选价值 1 的 C
+  const r = solve(scenes, C(), LT(10, 1));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.totalValue, 1);
+  assert.deepStrictEqual(r.excludedIds, ['B']);
+  assert.ok(r.selectedIds.includes('A') && r.selectedIds.includes('C'));
+  assert.ok(r.steps.every(s => s.count <= 1));
+}
+
+/* 45. timed：必演场景自身无法排入 → 明确提示并点名 */
+{
+  const scenes = [
+    T('A', ['a1', 'a2', 'a3', 'a4'], 5, true, 0),
+    T('B', ['b'], 5, true, 0),
+  ];
+  const r = solve(scenes, C(), LT(10, 1));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.conflict.type, 'prop-limit-infeasible');
+  assert.ok(r.conflict.message.includes('A'));
+}
+
+/* 46. timed：上限过紧（去掉上限即可行）→ prop-limit-infeasible */
+{
+  const scenes = [T('A', ['x'], 5, true, 0), T('B', ['y'], 5, true, 0)];
+  const r = solve(scenes, C(), LT(10, 1));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.conflict.type, 'prop-limit-infeasible');
+  assert.strictEqual(solve(scenes, C(), LT(10, 0)).ok, true);
+}
+
+/* 47. 重排：后缀每段受限；首段从当前实际道具计算 */
+{
+  const scenes = [S('A', ['x']), S('B', ['x']), S('C', ['y']), S('D', ['y'])];
+  const r = replan(scenes, C(), {
+    propLimit: 2,
+    replan: { prefixIds: ['A'], stageProps: ['x'] },
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.propLimit, 2);
+  assert.deepStrictEqual(r.prefixIds, ['A']);
+  // 首段：实际道具 {x} → B{x}，用量 0
+  const firstSuffix = r.steps.find(s => s.fromStage);
+  assert.ok(firstSuffix);
+  assert.strictEqual(firstSuffix.count, 0);
+  assert.strictEqual(r.suffixCost, 2); // B→C 跨组 2 件，C→D 0
+  assert.ok(r.steps.filter(s => s.phase === 'suffix').every(s => s.count <= 2));
+
+  // 上限 1：跨组换景（2 件）不可行 → 明确提示
+  const tight = replan(scenes, C(), {
+    propLimit: 1,
+    replan: { prefixIds: ['A'], stageProps: ['x'] },
+  });
+  assert.strictEqual(tight.ok, false);
+  assert.strictEqual(tight.conflict.type, 'prop-limit-infeasible');
+}
+
+/* 48. 重排：从当前实际道具切到任何剩余场景都超限 → 明确提示舞台道具 */
+{
+  const scenes = [S('A', ['x']), S('C', ['y'])];
+  const r = replan(scenes, C(), {
+    propLimit: 1,
+    replan: { prefixIds: ['A'], stageProps: ['x'] },
+  });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.conflict.type, 'prop-limit-infeasible');
+  assert.ok(r.conflict.message.includes('实际道具'));
+  // 舞台道具换成 {y} 后首段用量 0 → 可行
+  const ok = replan(scenes, C(), {
+    propLimit: 1,
+    replan: { prefixIds: ['A'], stageProps: ['y'] },
+  });
+  assert.strictEqual(ok.ok, true);
+}
+
+/* 49. 重排：已完成前缀是历史事实，不受上限约束；仅后缀各段受限 */
+{
+  const scenes = [S('A', ['a', 'b', 'c']), S('B', ['x', 'y', 'z']), S('C', ['x', 'y', 'z'])];
+  const r = replan(scenes, C(), {
+    propLimit: 3,
+    replan: { prefixIds: ['A', 'B'], stageProps: ['x', 'y', 'z'] },
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.prefixCost, 9); // 开场 3 + A→B 6（历史段超限也不拦截）
+  assert.deepStrictEqual(r.suffixIds, ['C']);
+  assert.strictEqual(r.suffixCost, 0);
+}
+
+/* 50. timed 重排：上限使高价值剩余场景不可选 → 后缀按原目标改选 */
+{
+  const scenes = [
+    T('A', ['x'], 5, true, 0),
+    T('B', ['y'], 5, false, 9),
+    T('C', ['x'], 5, false, 1),
+  ];
+  // 无上限：后缀 C,B 价值 10
+  const noLimit = replan(scenes, C(), { mode: 'timed', timeLimit: 15,
+    replan: { prefixIds: ['A'], stageProps: ['x'] } });
+  assert.strictEqual(noLimit.ok, true);
+  assert.strictEqual(noLimit.suffixValue, 10);
+  // 上限 1：B 从实际道具或 C 切入都需 2 件 → 不可入选，后缀只剩 C
+  const r = replan(scenes, C(), { mode: 'timed', timeLimit: 15, propLimit: 1,
+    replan: { prefixIds: ['A'], stageProps: ['x'] } });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.suffixIds, ['C']);
+  assert.strictEqual(r.suffixValue, 1);
+  assert.strictEqual(r.totalValue, 1);
+}
+
 console.log('全部测试通过 ✔');

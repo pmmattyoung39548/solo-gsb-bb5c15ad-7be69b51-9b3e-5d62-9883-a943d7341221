@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>🎭 舞台换景顺序优化</h1>
-    <p>录入场景与道具，设置约束，计算道具增减次数最少的演出顺序（最多 12 个场景）。演出进行中还可确认已完成前缀、录入舞台实况，只重排剩余场景。</p>
+    <p>录入场景与道具，设置约束，计算道具增减次数最少的演出顺序（最多 12 个场景）。可额外设置单段道具操作上限（开场布置与每次换景的撤下＋上台合计）。演出进行中还可确认已完成前缀、录入舞台实况，只重排剩余场景。</p>
   </header>
 
   <main>
@@ -39,6 +39,13 @@
           <input type="number" id="time-limit" min="1" step="1" value="120"> 分钟
         </label>
         <span class="hint" id="required-duration-hint"></span>
+      </div>
+
+      <div class="limit-settings">
+        <label>单段道具操作上限：
+          <input type="number" id="prop-limit" min="1" step="1" placeholder="留空不限制"> 件/段
+        </label>
+        <span class="hint">可选：开场布置与每次换景的「撤下＋上台」合计不超过该值；演出中重排的首段（从当前实际道具切入）同样受限，已完成前缀不受影响。</span>
       </div>
 
       <table id="scene-table">
