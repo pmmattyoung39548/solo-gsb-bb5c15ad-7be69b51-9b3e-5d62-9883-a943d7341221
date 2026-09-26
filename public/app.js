@@ -9,6 +9,7 @@ const state = {
   planId: null,
   mode: 'classic', // 'classic' | 'timed'
   timeLimit: 120,
+  opLimit: null, // 单段道具操作上限（件）；null 表示不限
   scenes: [], // classic: { id, name, props }；timed 额外带 { duration, required, value }
   constraints: { dependencies: [], fixedPositions: [], forbiddenAdjacencies: [] },
   live: null, // 最近一次求解/重排结果（当前节目单）
@@ -159,6 +160,19 @@ function updateRequiredHint() {
   el.classList.toggle('hint-over', total > state.timeLimit);
 }
 
+/* ================= 单段道具操作上限 ================= */
+function syncOpLimitUI() {
+  const enabled = state.opLimit !== null;
+  const cb = $('#op-limit-enabled');
+  cb.checked = enabled;
+  $('#op-limit-fields').hidden = !enabled;
+  $('#op-limit').value = enabled ? state.opLimit : 3;
+  $('#op-limit').disabled = !enabled;
+  $('#op-limit-hint').textContent = enabled
+    ? `每段撤下 + 上台合计不得超过 ${state.opLimit} 件；求解器将在满足该上限的候选中按原目标选最优顺序。`
+    : '不勾选时不限制每段的道具操作件数。';
+}
+
 /* ================= 模式切换 ================= */
 function applyMode(mode) {
   state.mode = mode;
@@ -177,6 +191,7 @@ function applyMode(mode) {
   $('#result-card').hidden = true;
   state.live = null;
   state.replan = null;
+  syncOpLimitUI();
   renderAll();
 }
 
@@ -265,6 +280,7 @@ function payload() {
     constraints: state.constraints,
   };
   if (isTimed()) base.timeLimit = state.timeLimit;
+  if (state.opLimit !== null) base.opLimit = state.opLimit;
   return base;
 }
 
@@ -599,6 +615,8 @@ function conflictContent(conflict, isOvertime) {
   const h = document.createElement('h3');
   if (conflict.type === 'prefix-conflict') {
     h.textContent = '⚠ 已完成前缀与约束冲突';
+  } else if (conflict.type === 'prop-limit-infeasible') {
+    h.textContent = '⚠ 无解：单段道具操作上限过低';
   } else {
     h.textContent = isOvertime ? '⚠ 无解：必演场景已超时' : '⚠ 无解：约束相互冲突';
   }
@@ -664,7 +682,12 @@ function stepsBlock(data) {
   const frag = document.createDocumentFragment();
   const total = document.createElement('p');
   total.className = 'total-line';
-  total.innerHTML = `道具增减总次数：<strong>${data.totalCost}</strong> 次（含开场布置，下同）`;
+  let totalHtml = `道具增减总次数：<strong>${data.totalCost}</strong> 次（含开场布置，下同）`;
+  if (data.opLimit) {
+    const maxUsed = data.steps.reduce((m, s) => Math.max(m, s.count), 0);
+    totalHtml += `　<span class="cap-cap">单段上限 ${data.opLimit} 件，最大单段用量 ${maxUsed} 件</span>`;
+  }
+  total.innerHTML = totalHtml;
   frag.appendChild(total);
 
   const h = document.createElement('h3');
@@ -701,7 +724,13 @@ function stepsBlock(data) {
       parts.push(`<span class="prop-add">上台：${escapeHtml(step.added.join('、'))}</span>`);
     }
     if (!parts.length) parts.push('<span class="prop-none">道具无变化</span>');
-    detail.innerHTML = parts.join('　｜　') + `　<span class="step-count">（${step.count} 次）</span>`;
+    let capTxt = '';
+    // 单段上限只约束开场/待执行段；已完成前缀的段是历史事实，不做用量比对
+    if (data.opLimit && step.phase !== 'done') {
+      const cls = step.count >= data.opLimit ? 'cap-badge cap-at' : 'cap-badge cap-under';
+      capTxt = `　<span class="${cls}">本段 ${step.count}/${data.opLimit} 件</span>`;
+    }
+    detail.innerHTML = parts.join('　｜　') + `　<span class="step-count">（${step.count} 次）</span>` + capTxt;
     li.appendChild(detail);
     ul.appendChild(li);
   });
@@ -909,6 +938,9 @@ function hydrateFromPlan(p) {
   state.planId = p.id;
   state.mode = p.mode === 'timed' ? 'timed' : 'classic';
   state.timeLimit = Number(p.timeLimit) || 120;
+  // 旧方案没有 opLimit 字段：按不限处理
+  const ol = Number(p.opLimit);
+  state.opLimit = (Number.isFinite(ol) && Number.isInteger(ol) && ol > 0) ? ol : null;
   state.scenes = p.scenes.map(s => ({
     id: s.id,
     name: s.name,
@@ -938,6 +970,7 @@ async function deletePlan() {
 
 function newPlan() {
   state.planId = null;
+  state.opLimit = null;
   state.scenes = [];
   state.constraints = { dependencies: [], fixedPositions: [], forbiddenAdjacencies: [] };
   state.live = null;
@@ -1019,6 +1052,18 @@ document.querySelectorAll('input[name="mode"]').forEach(r => {
 $('#time-limit').addEventListener('input', () => {
   state.timeLimit = Math.max(1, Math.floor(Number($('#time-limit').value) || 0));
   updateRequiredHint();
+});
+
+$('#op-limit-enabled').addEventListener('change', () => {
+  state.opLimit = $('#op-limit-enabled').checked
+    ? Math.max(1, Math.floor(Number($('#op-limit').value) || 1))
+    : null;
+  syncOpLimitUI();
+});
+$('#op-limit').addEventListener('input', () => {
+  const v = Math.max(1, Math.floor(Number($('#op-limit').value) || 0));
+  state.opLimit = v;
+  $('#op-limit-hint').textContent = `每段撤下 + 上台合计不得超过 ${v} 件；求解器将在满足该上限的候选中按原目标选最优顺序。`;
 });
 
 $('#btn-add-dep').addEventListener('click', () => {

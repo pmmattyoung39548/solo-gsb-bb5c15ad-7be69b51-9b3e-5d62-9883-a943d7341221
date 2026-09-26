@@ -33,6 +33,18 @@ function validatePayload(body) {
     timeLimit = 0;
   }
 
+  // 单段道具操作上限（两种模式通用；缺省 / null 表示不限）
+  let opLimit = null;
+  const rawOpLimit = body && body.opLimit;
+  if (rawOpLimit !== undefined && rawOpLimit !== null) {
+    const n = Number(rawOpLimit);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+      errors.push('单段道具操作上限必须是正整数（件），或留空表示不限');
+    } else {
+      opLimit = n;
+    }
+  }
+
   const rawScenes = body && body.scenes;
   if (!Array.isArray(rawScenes) || rawScenes.length === 0) {
     errors.push('至少需要 1 个场景');
@@ -101,6 +113,7 @@ function validatePayload(body) {
     errors,
     mode,
     timeLimit,
+    opLimit,
     scenes,
     constraints: { dependencies, fixedPositions, forbiddenAdjacencies },
   };
@@ -178,19 +191,19 @@ function sanitizeReplanState(raw, idSet) {
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.post('/api/solve', (req, res) => {
-  const { errors, mode, timeLimit, scenes, constraints } = validatePayload(req.body);
+  const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
-  res.json(solve(scenes, constraints, { mode, timeLimit }));
+  res.json(solve(scenes, constraints, { mode, timeLimit, opLimit }));
 });
 
 /** 演出中重排：确认已完成连续前缀 + 当前舞台实际道具，只重排剩余场景 */
 app.post('/api/replan', (req, res) => {
-  const { errors, mode, timeLimit, scenes, constraints } = validatePayload(req.body);
+  const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   const { errors: rpErrors, replan: replanOpts } = validateReplan(req.body, scenes || []);
   if (errors.length || rpErrors.length) {
     return res.status(400).json({ ok: false, errors: [...errors, ...rpErrors] });
   }
-  res.json(replan(scenes, constraints, { mode, timeLimit, replan: replanOpts }));
+  res.json(replan(scenes, constraints, { mode, timeLimit, opLimit, replan: replanOpts }));
 });
 
 app.get('/api/plans', (req, res) => {
@@ -200,10 +213,10 @@ app.get('/api/plans', (req, res) => {
 app.post('/api/plans', (req, res) => {
   const name = String((req.body && req.body.name) || '').trim();
   if (!name) return res.status(400).json({ ok: false, errors: ['方案名称不能为空'] });
-  const { errors, mode, timeLimit, scenes, constraints } = validatePayload(req.body);
+  const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
   const replanState = sanitizeReplanState(req.body && req.body.replanState, new Set(scenes.map(s => s.id)));
-  const plan = store.create({ name, mode, timeLimit, scenes, constraints, replanState });
+  const plan = store.create({ name, mode, timeLimit, opLimit, scenes, constraints, replanState });
   res.status(201).json({ ok: true, plan });
 });
 
@@ -216,10 +229,10 @@ app.get('/api/plans/:id', (req, res) => {
 app.put('/api/plans/:id', (req, res) => {
   const name = String((req.body && req.body.name) || '').trim();
   if (!name) return res.status(400).json({ ok: false, errors: ['方案名称不能为空'] });
-  const { errors, mode, timeLimit, scenes, constraints } = validatePayload(req.body);
+  const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
   const replanState = sanitizeReplanState(req.body && req.body.replanState, new Set(scenes.map(s => s.id)));
-  const plan = store.update(req.params.id, { name, mode, timeLimit, scenes, constraints, replanState });
+  const plan = store.update(req.params.id, { name, mode, timeLimit, opLimit, scenes, constraints, replanState });
   if (!plan) return res.status(404).json({ ok: false, errors: ['方案不存在'] });
   res.json({ ok: true, plan });
 });

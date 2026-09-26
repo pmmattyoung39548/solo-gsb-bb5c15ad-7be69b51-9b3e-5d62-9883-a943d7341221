@@ -41,6 +41,7 @@ function randomInstance() {
     scenes, constraints,
     mode: scenes.some(s => s.required) || rnd() < 0.3 ? 'timed' : 'classic',
     timeLimit: 1 + ri(n * 14),
+    opLimit: rnd() < 0.5 ? 1 + ri(5) : null,
   };
 }
 
@@ -59,7 +60,8 @@ function perms(arr) {
 }
 
 function run() {
-  const { scenes, constraints, mode, timeLimit } = randomInstance();
+  const { scenes, constraints, mode, timeLimit, opLimit } = randomInstance();
+  const cap = (opLimit === undefined || opLimit === null) ? Infinity : opLimit;
   const n = scenes.length;
   const idx = new Map(scenes.map((s, i) => [s.id, i]));
   const props = scenes.map(s => new Set(s.props));
@@ -112,7 +114,7 @@ function run() {
   const prefixDur = prefix.reduce((a, g) => a + scenes[g].duration, 0);
   if (mode === 'timed' && prefixDur > timeLimit) prefixOvertime = true;
 
-  const opts = { mode, timeLimit, replan: {
+  const opts = { mode, timeLimit, opLimit, replan: {
     prefixIds: prefix.map(g => scenes[g].id),
     stageProps: [...stageProps],
     originalOrder: scenes.map(s => s.id),
@@ -167,8 +169,14 @@ function run() {
       }
       let cost = 0;
       if (perm.length) {
-        cost += symDiff(stageProps, props[perm[0]]);
-        for (let i = 1; i < perm.length; i++) cost += symDiff(props[perm[i - 1]], props[perm[i]]);
+        const startEdge = symDiff(stageProps, props[perm[0]]);
+        if (startEdge > cap) return null; // 首段（从当前实际道具切入）超出上限
+        cost += startEdge;
+        for (let i = 1; i < perm.length; i++) {
+          const e = symDiff(props[perm[i - 1]], props[perm[i]]);
+          if (e > cap) return null; // 本次换景超出上限
+          cost += e;
+        }
       }
       let value = 0;
       if (mode === 'timed') for (const g of perm) if (!scenes[g].required) value += scenes[g].value;

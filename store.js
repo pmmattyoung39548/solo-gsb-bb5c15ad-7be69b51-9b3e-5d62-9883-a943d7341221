@@ -37,20 +37,20 @@ function get(id) {
   return readAll().find(p => p.id === id) || null;
 }
 
-function create({ name, mode = 'classic', timeLimit = 0, scenes, constraints, replanState = null }) {
+function create({ name, mode = 'classic', timeLimit = 0, opLimit = null, scenes, constraints, replanState = null }) {
   const plans = readAll();
   const now = new Date().toISOString();
-  const plan = { id: crypto.randomUUID(), name, mode, timeLimit, scenes, constraints, replanState, createdAt: now, updatedAt: now };
+  const plan = { id: crypto.randomUUID(), name, mode, timeLimit, opLimit, scenes, constraints, replanState, createdAt: now, updatedAt: now };
   plans.push(plan);
   writeAll(plans);
   return plan;
 }
 
-function update(id, { name, mode = 'classic', timeLimit = 0, scenes, constraints, replanState = null }) {
+function update(id, { name, mode = 'classic', timeLimit = 0, opLimit = null, scenes, constraints, replanState = null }) {
   const plans = readAll();
   const i = plans.findIndex(p => p.id === id);
   if (i === -1) return null;
-  plans[i] = { ...plans[i], name, mode, timeLimit, scenes, constraints, replanState, updatedAt: new Date().toISOString() };
+  plans[i] = { ...plans[i], name, mode, timeLimit, opLimit, scenes, constraints, replanState, updatedAt: new Date().toISOString() };
   writeAll(plans);
   return plans[i];
 }

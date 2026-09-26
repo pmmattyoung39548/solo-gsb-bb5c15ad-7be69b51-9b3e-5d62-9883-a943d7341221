@@ -118,6 +118,33 @@ tbody tr + tr td { border-top: 1px solid var(--border); }
 .timed-settings #time-limit { width: 90px; }
 .hint-over { color: #ff9d9a; font-weight: bold; }
 
+.limit-settings {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.limit-opt { display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: bold; }
+.limit-settings #op-limit { width: 80px; }
+.cap-cap { color: var(--accent); font-size: 13.5px; font-weight: normal; }
+.cap-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: bold;
+  border-radius: 4px;
+  padding: 1px 8px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.cap-at { color: #ffd27a; border-color: var(--accent); background: rgba(232,182,76,0.14); }
+.cap-under { color: var(--muted); border-color: var(--border); }
+.step-done .cap-badge { opacity: 0.85; }
+
 input[type="text"], input[type="number"], select {
   background: var(--bg);
   color: var(--text);

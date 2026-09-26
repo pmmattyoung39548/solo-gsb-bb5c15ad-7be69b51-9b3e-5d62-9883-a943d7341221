@@ -661,4 +661,131 @@ const R = (opts) => ({ replan: opts });
   assert.ok(elapsed < 1000, `重排耗时 ${elapsed}ms，超过预期`);
 }
 
+/* ================= 单段道具操作上限（opLimit）================= */
+
+/* 41. 不带 opLimit 时行为不变；带 opLimit 时每段操作数不超过上限 */
+{
+  const scenes = [
+    S('A', ['桌', '椅']),
+    S('B', ['桌', '椅', '灯']),
+    S('C', ['树']),
+  ];
+  const free = solve(scenes, C());
+  assert.strictEqual(free.opLimit, null);
+
+  // cap=3：原最优 C->A->B 的各段为 1/3/1，可行且仍最优
+  const cap3 = solve(scenes, C(), { opLimit: 3 });
+  assert.strictEqual(cap3.ok, true);
+  assert.deepStrictEqual(cap3.order, ['C', 'A', 'B']);
+  assert.strictEqual(cap3.totalCost, 5);
+  assert.strictEqual(cap3.opLimit, 3);
+  for (const step of cap3.steps) assert.ok(step.count <= 3);
+
+  // cap=2：任何顺序都含至少 3 件的一段 → 无解
+  const cap2 = solve(scenes, C(), { opLimit: 2 });
+  assert.strictEqual(cap2.ok, false);
+  assert.strictEqual(cap2.conflict.type, 'prop-limit-infeasible');
+  assert.strictEqual(cap2.conflict.opLimit, 2);
+  assert.strictEqual(cap2.conflict.minRequiredLimit, 3);
+  assert.ok(cap2.conflict.message.includes('3 件'));
+}
+
+/* 42. 上限可行但收紧可行域：在满足上限的候选中仍按原目标择优（代价可严格变大） */
+{
+  const scenes = [
+    S('s0', ['p2', 'p4', 'p6']),
+    S('s1', ['p5', 'p1', 'p6']),
+    S('s2', ['p4']),
+    S('s3', ['p5', 'p3']),
+  ];
+  const free = solve(scenes, C());
+  assert.deepStrictEqual(free.order, ['s2', 's0', 's1', 's3']);
+  assert.strictEqual(free.totalCost, 10);
+  assert.deepStrictEqual(free.steps.map(s => s.count), [1, 2, 4, 3]);
+
+  const capped = solve(scenes, C(), { opLimit: 3 });
+  assert.strictEqual(capped.ok, true);
+  assert.deepStrictEqual(capped.order, ['s1', 's3', 's2', 's0']);
+  assert.strictEqual(capped.totalCost, 11); // 原最优含 4 件的一段被禁，次优为 11
+  for (const step of capped.steps) assert.ok(step.count <= 3);
+}
+
+/* 43. 上限与既有约束并存：不限上限仍无解时按原归因（依赖环 / 约束核心），不嫁祸给上限 */
+{
+  const scenes = [S('A', []), S('B', [])];
+  const cyc = solve(scenes, C({
+    dependencies: [{ before: 'A', after: 'B' }, { before: 'B', after: 'A' }],
+  }), { opLimit: 3 });
+  assert.strictEqual(cyc.ok, false);
+  assert.strictEqual(cyc.conflict.type, 'dependency-cycle');
+
+  const fixed = solve(scenes, C({
+    fixedPositions: [{ sceneId: 'A', position: 1 }, { sceneId: 'B', position: 1 }],
+  }), { opLimit: 3 });
+  assert.strictEqual(fixed.ok, false);
+  assert.strictEqual(fixed.conflict.type, 'constraint-set');
+}
+
+/* 44. 重排：上限只约束后缀（含从当前实际道具切入的首段）；已完成前缀段不校验 */
+{
+  const scenes = [
+    S('A', ['桌', '椅']),
+    S('B', ['桌', '椅', '灯']),
+    S('C', ['树']),
+  ];
+
+  // 实际舞台恰好为 {桌椅}：切入 A 为 0 件、A→B 上灯 1 件，cap=1 可排
+  const ok = replan(scenes, C(), { opLimit: 1, replan: {
+    prefixIds: ['C'], stageProps: ['桌', '椅'], originalOrder: ['C', 'A', 'B'],
+  } });
+  assert.strictEqual(ok.ok, true);
+  assert.deepStrictEqual(ok.order, ['C', 'A', 'B']);
+  assert.strictEqual(ok.opLimit, 1);
+  const suffixSteps = ok.steps.filter(s => s.phase === 'suffix');
+  for (const s of suffixSteps) assert.ok(s.count <= 1);
+
+  // 实际舞台 {树桌}：首段切入最少 2 件，cap=1 无解 → 明确上限提示
+  const bad = replan(scenes, C(), { opLimit: 1, replan: {
+    prefixIds: ['C'], stageProps: ['树', '桌'], originalOrder: ['C', 'A', 'B'],
+  } });
+  assert.strictEqual(bad.ok, false);
+  assert.strictEqual(bad.conflict.type, 'prop-limit-infeasible');
+  assert.ok(bad.conflict.minRequiredLimit >= 1);
+}
+
+/* 45. timed 模式：价值优先不变，仅在满足上限的候选中择优；空节目单不受上限影响 */
+{
+  const scenes = [
+    T('A', ['桌', '椅'], 10, true, 0),
+    T('B', ['灯'], 10, false, 5),
+    T('C', ['树'], 10, false, 8),
+  ];
+  const tcap = solve(scenes, C(), { mode: 'timed', timeLimit: 30, opLimit: 1 });
+  assert.strictEqual(tcap.ok, false);
+  assert.strictEqual(tcap.conflict.type, 'prop-limit-infeasible');
+  assert.strictEqual(tcap.conflict.minRequiredLimit, 2);
+
+  const tcap3 = solve(scenes, C(), { mode: 'timed', timeLimit: 30, opLimit: 3 });
+  assert.strictEqual(tcap3.ok, true);
+  assert.strictEqual(tcap3.totalValue, 13); // 价值仍最大化
+  for (const s of tcap3.steps) assert.ok(s.count <= 3);
+
+  const emptyProg = solve([T('Z', ['x', 'y', 'z'], 10, false, 5)], C(),
+    { mode: 'timed', timeLimit: 5, opLimit: 1 });
+  assert.strictEqual(emptyProg.ok, true);
+  assert.deepStrictEqual(emptyProg.order, []);
+}
+
+/* 46. 12 场景带上限性能冒烟（含无解路径的二分诊断，应远小于 1 秒） */
+{
+  const scenes = [];
+  for (let i = 0; i < 12; i++) scenes.push(S(`S${i}`, [`p${i}`, `p${i + 1}`, `q${i}`]));
+  const t0 = Date.now();
+  const r = solve(scenes, C(), { opLimit: 1 }); // 开场至少 3 件，必然因上限无解
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.conflict.type, 'prop-limit-infeasible');
+  assert.ok(elapsed < 1000, `带诊断的求解耗时 ${elapsed}ms，超过预期`);
+}
+
 console.log('全部测试通过 ✔');

@@ -34,6 +34,18 @@
         </label>
       </div>
 
+      <div class="limit-settings">
+        <label class="limit-opt">
+          <input type="checkbox" id="op-limit-enabled">
+          <span>限制单段道具操作上限</span>
+        </label>
+        <label id="op-limit-fields" hidden>
+          开场布置与每次换景，撤下 + 上台合计最多
+          <input type="number" id="op-limit" min="1" step="1" value="3"> 件
+        </label>
+        <span class="hint" id="op-limit-hint">不勾选时不限制每段的道具操作件数。</span>
+      </div>
+
       <div class="timed-settings" id="timed-settings" hidden>
         <label>整场时长上限：
           <input type="number" id="time-limit" min="1" step="1" value="120"> 分钟

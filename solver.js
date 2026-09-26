@@ -15,6 +15,11 @@
  *    2. 最小化道具增减次数（开场布置 + 各次换景撤下/上台之和）；
  *    3. 同分时保持确定顺序（子集掩码升序、场景下标升序）。
  *
+ * 可选参数 opLimit（单段道具操作上限，正整数；缺省/Infinity 表示不限）：
+ *    开场布置与每一次换景的"撤下数 + 上台数"都不得超过该上限。
+ *    求解器在同时满足现有约束与该上限的候选中，仍按上述原目标择优；
+ *    重排时上限只约束后缀（含"从当前实际道具切入"的首段），已完成前缀不变。
+ *
  * 约束类型：
  *  - dependencies:        [{ before, after }]   before 必须排在 after 之前（二者都入选时生效）
  *  - fixedPositions:      [{ sceneId, position }] 场景固定在第 position 位（1 起，按入选序列计）
@@ -47,6 +52,13 @@ function popcount(x) {
   let c = 0;
   while (x) { x &= x - 1; c++; }
   return c;
+}
+
+/** 单段道具操作上限：非负有限整数（0 起），否则视为不限（Infinity）。 */
+function normOpLimit(v) {
+  if (v === null || v === undefined || v === '') return Infinity;
+  const n = Number(v);
+  return (Number.isFinite(n) && Number.isInteger(n) && n >= 0) ? n : Infinity;
 }
 
 /** 把输入编译成位掩码/矩阵模型，供 DP 使用。 */
@@ -114,8 +126,11 @@ function buildModel(scenes, constraints) {
   };
 }
 
-/** 子集 DP。返回 { cost, orderIdx } 或 null（无解）。要求全部 n 个场景都排入。 */
-function runDP(model) {
+/**
+ * 子集 DP。返回 { cost, orderIdx } 或 null（无解）。要求全部 n 个场景都排入。
+ * opLimit 给出时，开场布置与每次换景的道具操作数都不得超过它。
+ */
+function runDP(model, opLimit = Infinity) {
   const { n, prereq, fixedPosOfScene, sceneAtPos, bad, cost, setupCost } = model;
   const fullMask = (1 << n) - 1;
   const size = 1 << n;
@@ -136,6 +151,7 @@ function runDP(model) {
   for (let j = 0; j < n; j++) {
     if (prereq[j] !== 0) continue;      // 有前置依赖的场景不能排首位
     if (!allowedAt(j, 0)) continue;
+    if (setupCost[j] > opLimit) continue; // 开场布置超出单段上限
     const m = 1 << j;
     ensure(m);
     dp[m][j] = setupCost[j];
@@ -155,6 +171,7 @@ function runDP(model) {
         if ((prereq[j] & ~mask) !== 0) continue; // 前置依赖必须已全部排入
         if (!allowedAt(j, pos)) continue;
         if (bad[last][j]) continue;
+        if (cost[last][j] > opLimit) continue;   // 本次换景超出单段上限
         const nm = mask | bit;
         const nc = cur + cost[last][j];
         ensure(nm);
@@ -210,7 +227,7 @@ function runDP(model) {
  * 取价值最高、代价最低者；同分时按掩码升序、末尾下标升序保持确定性。
  * 无必演场景时空集（空节目单）作为 value=0、cost=0 的保底可行解。
  */
-function runTimedDP(model, timeLimit) {
+function runTimedDP(model, timeLimit, opLimit = Infinity) {
   const { n, prereq, fixedMask, bad, cost, setupCost, durations, values, requiredMask } = model;
   const fullMask = (1 << n) - 1;
 
@@ -256,6 +273,7 @@ function runTimedDP(model, timeLimit) {
   // 单元素集合：该场景没有固定约束，或恰好固定在第 0 位
   for (let j = 0; j < n; j++) {
     if (!fixedAt(j, 0)) continue;
+    if (setupCost[j] > opLimit) continue; // 开场布置超出单段上限
     const m = 1 << j;
     ensure(m);
     dp[m][j] = setupCost[j];
@@ -278,6 +296,7 @@ function runTimedDP(model, timeLimit) {
         const v = row[prev];
         if (v === Infinity) continue;
         if (bad[prev][last]) continue;
+        if (cost[prev][last] > opLimit) continue; // 本次换景超出单段上限
         const nc = v + cost[prev][last];
         if (nc < best) { best = nc; bestPrev = prev; } // prev 升序，严格小于 → 确定
       }
@@ -738,7 +757,8 @@ function buildSuffixContext(scenes, model, constraints, prefixIdx, prefixMask) {
  * 约束以参数形式给出，便于冲突分析时逐个剔除。
  * 返回 { cost, orderIdx } 或 null。orderIdx 使用全局场景下标。
  */
-function solveClassicSuffix(scenes, model, suffix, stageProps, deps, fixed, noAdj, boundaryBadMask) {
+function solveClassicSuffix(scenes, model, suffix, stageProps, deps, fixed, noAdj, boundaryBadMask,
+                           opLimit = Infinity) {
   const n = scenes.length;
   const k0 = n - suffix.remainingIdx.length; // 前缀长度 = 首个剩余场景的绝对序位（0 起）
 
@@ -795,6 +815,7 @@ function solveClassicSuffix(scenes, model, suffix, stageProps, deps, fixed, noAd
     // 与前缀最后一个已完成场景的禁止相邻（边界冲突）
     const gg = local[g];
     if (boundaryBadMask & (1 << gg)) continue;
+    if (startCost[g] > opLimit) continue; // 从当前实际道具切入的首段超出上限
     ensure(1 << g);
     dp[1 << g][g] = startCost[g];
   }
@@ -813,6 +834,7 @@ function solveClassicSuffix(scenes, model, suffix, stageProps, deps, fixed, noAd
         if ((prereqLocal[g] & ~mask) !== 0) continue;
         if (!fixedAt(g, relPos)) continue;
         if (badLocal[last][g]) continue;
+        if (model.cost[local[last]][local[g]] > opLimit) continue; // 本次换景超出单段上限
         const nm = mask | bit;
         const nc = cur + model.cost[local[last]][local[g]];
         ensure(nm);
@@ -854,7 +876,7 @@ function solveClassicSuffix(scenes, model, suffix, stageProps, deps, fixed, noAd
  * mask 为全局场景位掩码（仅后缀位置位）。
  */
 function solveTimedSuffix(scenes, model, suffix, stageProps, timeBudget,
-                         deps, fixed, noAdj, boundaryBadMask) {
+                         deps, fixed, noAdj, boundaryBadMask, opLimit = Infinity) {
   const n = scenes.length;
   const { requiredMask } = model;
   const k0 = n - suffix.remainingIdx.length;
@@ -939,6 +961,7 @@ function solveTimedSuffix(scenes, model, suffix, stageProps, timeBudget,
     if (bannedLocal & (1 << g)) continue;
     if (!fixedAt(g, 0)) continue;
     if (boundaryBadMask & (1 << local[g])) continue;
+    if (startCost[g] > opLimit) continue; // 从当前实际道具切入的首段超出上限
     ensure(1 << g);
     dp[1 << g][g] = startCost[g];
   }
@@ -959,6 +982,7 @@ function solveTimedSuffix(scenes, model, suffix, stageProps, timeBudget,
         const v = row[prev];
         if (v === Infinity) continue;
         if (badLocal[prev][last]) continue;
+        if (model.cost[local[prev]][local[last]] > opLimit) continue; // 本次换景超出单段上限
         const nc = v + model.cost[local[prev]][local[last]];
         if (nc < best) { best = nc; bestPrev = prev; }
       }
@@ -1339,6 +1363,8 @@ function replan(scenes, constraints, options = {}) {
   const rp = options.replan || {};
   const prefixIds = Array.isArray(rp.prefixIds) ? rp.prefixIds.map(String) : [];
   const stageProps = new Set(normalizeProps(rp.stageProps));
+  const opLimit = normOpLimit(options.opLimit);
+  const opLimitOut = opLimit === Infinity ? null : opLimit;
 
   // 解析前缀：必须是存在的场景且无重复，按给定顺序
   const prefixIdx = [];
@@ -1456,8 +1482,18 @@ function replan(scenes, constraints, options = {}) {
 
   if (!timed) {
     const res = solveClassicSuffix(scenes, model, suffix, stageProps,
-      suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask);
+      suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask, opLimit);
     if (!res) {
+      if (opLimit !== Infinity) {
+        const resNoCap = solveClassicSuffix(scenes, model, suffix, stageProps,
+          suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask);
+        if (resNoCap) {
+          const hi = suffixMaxEdge(model, suffix, stageProps);
+          const minCap = minCapByBinarySearch(hi, l => solveClassicSuffix(scenes, model, suffix, stageProps,
+            suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask, l) !== null);
+          return { ok: false, conflict: buildPropLimitConflict(opLimit, minCap, false, true) };
+        }
+      }
       return { ok: false, conflict: analyzeClassicSuffix(scenes, model, constraints || {}, suffix, prefixIdx, boundaryBadMask) };
     }
     const suffixIdx = res.orderIdx;
@@ -1479,6 +1515,7 @@ function replan(scenes, constraints, options = {}) {
       suffixIds: suffixIdx.map(g => scenes[g].id),
       stageProps: [...stageProps],
       totalCost: newTotalCost,
+      opLimit: opLimitOut,
       prefixCost,
       suffixCost,
       originalTailCost: origTailCost,
@@ -1492,27 +1529,39 @@ function replan(scenes, constraints, options = {}) {
 
   // timed
   const timeBudget = timeLimit - prefixDuration;
+
+  // 剩余必演自身已超剩余时长：给出明确的超时提示（与单段上限无关，优先判定）
+  let remRequiredDur = 0;
+  for (const g of suffix.remainingIdx) {
+    if (model.requiredMask & (1 << g)) remRequiredDur += model.durations[g];
+  }
+  if (remRequiredDur > timeBudget) {
+    return {
+      ok: false,
+      conflict: {
+        type: 'required-overtime',
+        message: `剩余必演场景共需 ${remRequiredDur} 分钟，但扣除已完成的 ${prefixDuration} 分钟后仅剩 ${timeBudget} 分钟，无法继续编排。`,
+        requiredTotal: prefixDuration + remRequiredDur,
+        timeLimit,
+        prefixDuration,
+        timeBudget,
+        constraints: [],
+      },
+    };
+  }
+
   const res = solveTimedSuffix(scenes, model, suffix, stageProps, timeBudget,
-    suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask);
+    suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask, opLimit);
   if (!res) {
-    // 剩余必演自身已超剩余时长：给出明确的超时提示
-    let remRequiredDur = 0;
-    for (const g of suffix.remainingIdx) {
-      if (model.requiredMask & (1 << g)) remRequiredDur += model.durations[g];
-    }
-    if (remRequiredDur > timeBudget) {
-      return {
-        ok: false,
-        conflict: {
-          type: 'required-overtime',
-          message: `剩余必演场景共需 ${remRequiredDur} 分钟，但扣除已完成的 ${prefixDuration} 分钟后仅剩 ${timeBudget} 分钟，无法继续编排。`,
-          requiredTotal: prefixDuration + remRequiredDur,
-          timeLimit,
-          prefixDuration,
-          timeBudget,
-          constraints: [],
-        },
-      };
+    if (opLimit !== Infinity) {
+      const resNoCap = solveTimedSuffix(scenes, model, suffix, stageProps, timeBudget,
+        suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask);
+      if (resNoCap) {
+        const hi = suffixMaxEdge(model, suffix, stageProps);
+        const minCap = minCapByBinarySearch(hi, l => solveTimedSuffix(scenes, model, suffix, stageProps, timeBudget,
+          suffix.activeDeps, suffix.activeFixed, suffix.activeNoAdj, boundaryBadMask, l) !== null);
+        return { ok: false, conflict: buildPropLimitConflict(opLimit, minCap, true, true) };
+      }
     }
     return {
       ok: false,
@@ -1552,6 +1601,7 @@ function replan(scenes, constraints, options = {}) {
     selectedIds,
     excludedIds,
     totalCost: newTotalCost,
+    opLimit: opLimitOut,
     totalValue,
     prefixValue,
     suffixValue: res.value,
@@ -1605,25 +1655,102 @@ function buildSteps(model, scenes, orderIdx) {
 }
 
 /**
+ * 在 [0, hi] 上二分"可行编排所需的最小单段上限"。
+ * 可行性关于上限单调（放宽只会让更多换景边可用）；调用方须保证不限上限时可行。
+ * @param {number} hi 任意可行编排中单段操作数的理论最大值
+ * @param {(l:number)=>boolean} feasible 给定上限时是否存在可行编排
+ * @returns {number} 最小可行上限
+ */
+function minCapByBinarySearch(hi, feasible) {
+  if (feasible(0)) return 0;
+  let lo = 1, ans = hi;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (feasible(mid)) { ans = mid; hi = mid - 1; }
+    else lo = mid + 1;
+  }
+  return ans;
+}
+
+/** 主问题（开场布置 + 全部换景）中最大的单段操作数，作为二分上界。 */
+function mainMaxEdge(model) {
+  let hi = 0;
+  const { n, setupCost, cost } = model;
+  for (let j = 0; j < n; j++) hi = Math.max(hi, setupCost[j]);
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++)
+      if (i !== j) hi = Math.max(hi, cost[i][j]);
+  return hi;
+}
+
+/** 后缀问题（当前实际道具切入首段 + 后缀内部换景）中最大的单段操作数。 */
+function suffixMaxEdge(model, suffix, stageProps) {
+  let hi = 0;
+  const local = suffix.remainingIdx;
+  for (const g of local) hi = Math.max(hi, symDiffSize(stageProps, model.propSets[g]));
+  for (const a of local)
+    for (const b of local)
+      if (a !== b) hi = Math.max(hi, model.cost[a][b]);
+  return hi;
+}
+
+/**
+ * 构造"单段道具操作上限导致无解"的冲突提示。
+ * 仅当不限上限时存在可行编排时调用；minCap 为放开到该件数即恢复有解。
+ * @param {number} opLimit 当前（导致无解的）上限
+ * @param {number|null} minCap 最小可行上限
+ * @param {boolean} timed 是否时长受限模式
+ * @param {boolean} suffix 是否演出中重排的后缀
+ */
+function buildPropLimitConflict(opLimit, minCap, timed, suffix) {
+  const where = suffix
+    ? '已完成前缀不可改变，而剩余部分（含"从当前舞台实际道具"切入的首段及之后的每次换景）中'
+    : '在满足全部既有约束的候选编排中';
+  let message = `单段道具操作上限 ${opLimit} 件过低：${where}，至少有一段的撤下与上台道具合计超过 ${opLimit} 件，`
+    + (timed ? '即使按时长上限取舍场景，' : '')
+    + '节目单仍无解。';
+  if (minCap !== null) {
+    message += ` 将上限放宽到 ${minCap} 件即可恢复有解（求解器仍会在可行候选中按原目标取最优顺序）；`;
+  }
+  message += '请调高单段道具操作上限，或放宽相关约束、调整相邻场景的道具集合。';
+  return {
+    type: 'prop-limit-infeasible',
+    message,
+    opLimit,
+    minRequiredLimit: minCap,
+    constraints: [],
+  };
+}
+
+/**
  * 求解入口。
- * @param {object} options { mode?: 'classic'|'timed', timeLimit?: number }
- * @returns 经典有解：{ ok:true, order, totalCost, steps }
+ * @param {object} options { mode?: 'classic'|'timed', timeLimit?: number, opLimit?: number }
+ *   opLimit 为可选的单段道具操作上限（正整数；缺省表示不限）
+ * @returns 经典有解：{ ok:true, order, totalCost, opLimit, steps }
  *          时长受限有解：{ ok:true, mode:'timed', order, selectedIds, excludedIds,
- *                          totalCost, totalValue, usedDuration, remainingDuration, timeLimit, steps }
- *          无解：{ ok:false, conflict }（时长超限额外带 reason:'required-overtime'）
+ *                          totalCost, totalValue, usedDuration, remainingDuration, timeLimit, opLimit, steps }
+ *          无解：{ ok:false, conflict }（时长超限额外带 reason:'required-overtime'；
+ *                上限导致无解时 conflict.type 为 'prop-limit-infeasible' 并带 minRequiredLimit）
  */
 function solve(scenes, constraints, options = {}) {
   const model = buildModel(scenes, constraints);
+  const opLimit = normOpLimit(options.opLimit);
+  const opLimitOut = opLimit === Infinity ? null : opLimit;
 
   if (options.mode !== 'timed') {
-    const res = runDP(model);
+    const res = runDP(model, opLimit);
     if (!res) {
+      if (opLimit !== Infinity && runDP(model) !== null) {
+        const minCap = minCapByBinarySearch(mainMaxEdge(model), l => runDP(model, l) !== null);
+        return { ok: false, conflict: buildPropLimitConflict(opLimit, minCap, false, false) };
+      }
       return { ok: false, conflict: analyzeConflict(scenes, constraints || {}) };
     }
     return {
       ok: true,
       order: res.orderIdx.map(i => scenes[i].id),
       totalCost: res.cost,
+      opLimit: opLimitOut,
       steps: buildSteps(model, scenes, res.orderIdx),
     };
   }
@@ -1649,8 +1776,12 @@ function solve(scenes, constraints, options = {}) {
     };
   }
 
-  const res = runTimedDP(model, timeLimit);
+  const res = runTimedDP(model, timeLimit, opLimit);
   if (!res) {
+    if (opLimit !== Infinity && runTimedDP(model, timeLimit) !== null) {
+      const minCap = minCapByBinarySearch(mainMaxEdge(model), l => runTimedDP(model, timeLimit, l) !== null);
+      return { ok: false, conflict: buildPropLimitConflict(opLimit, minCap, true, false) };
+    }
     return { ok: false, conflict: analyzeTimedInfeasible(scenes, constraints || {}, model, timeLimit) };
   }
 
@@ -1669,6 +1800,7 @@ function solve(scenes, constraints, options = {}) {
     usedDuration: res.usedDuration,
     remainingDuration: timeLimit - res.usedDuration,
     timeLimit,
+    opLimit: opLimitOut,
     steps: buildSteps(model, scenes, res.orderIdx),
   };
 }
